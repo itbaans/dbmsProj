@@ -21,7 +21,7 @@ func TestParseEasy(t *testing.T) {
 		{SQL: "select sq(sq(5)) from t", Ordered: false},
 		{SQL: "select 1, name from t", Ordered: false},
 		{SQL: "select age, name from t", Ordered: false},
-		{SQL: "select t.name, sum(age) totage from t group by t.name", Ordered: false},
+		{SQL: "select t.name, sum(age) as totage from t group by t.name", Ordered: false},
 		{SQL: "select t.name, t.age from t join t2 on t.name = t2.name where t.age < 50", Ordered: false},
 		{SQL: "select name from (select x.name from (select t.name from t) x)y order by name asc", Ordered: true},
 		{SQL: "select age, count(*) from t group by age", Ordered: false},
