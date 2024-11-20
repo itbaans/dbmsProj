@@ -67,7 +67,7 @@ func (a *Aggregator) Descriptor() *TupleDesc {
 	}
 	for i, expr := range a.groupByFields {
 		groupByDesc.Fields[i] = FieldType{
-			Fname: fmt.Sprintf("groupby_%d", i),
+			Fname: expr.GetExprType().Fname,
 			Ftype: expr.GetExprType().Ftype,
 		}
 	}
@@ -259,6 +259,7 @@ func getFinalizedTuplesIterator(a *Aggregator, groupByList []*Tuple, aggState ma
 		// Move to next group
 		currentIndex++
 
+		//fmt.Println(resultTuple)
 		return resultTuple, nil
 	}
 }

@@ -53,8 +53,8 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
-	catName := "catalog.txt"
-	catPath := "godb"
+	catName := "transitdb.catalog"
+	catPath := "transitdb\\"
 
 	c, err := godb.NewCatalogFromFile(catName, bp, catPath)
 	if err != nil {
