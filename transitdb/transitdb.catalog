@@ -1,0 +1,7 @@
+gated_station_entries (service_date string,time string,station_id string,line_id string,gated_entries int)
+lines (line_id string, line_name string)
+routes (route_id int,line_id string,first_station_id string,last_station_id string,direction int,direction_desc string,route_name string)
+stations (station_id string,station_name string)
+rail_ridership (season string,line_id string,direction int,time_period_id string,station_id string,total_ons int,total_offs int,number_service_days int,average_ons int,average_offs int,average_flow int)
+station_orders (route_id int,station_id string,stop_order int,distance_from_last_station_miles int)
+time_periods (time_period_id string,day_type string,time_period string,period_start_time string,period_end_time string)
