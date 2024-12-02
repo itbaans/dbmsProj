@@ -1,6 +1,7 @@
 package godb
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
@@ -28,6 +29,7 @@ func makeTestVars(t *testing.T) (TupleDesc, Tuple, Tuple, *HeapFile, *BufferPool
 	bp, hf := makeTestFile(t, 3)
 	td, t1, t2 := makeTupleTestVars()
 	tid := NewTID()
+	fmt.Println("gg")
 	bp.BeginTransaction(tid)
 
 	// fmt.Println(&t1)

@@ -140,7 +140,7 @@ func (f *HeapFile) LoadFromCSV(file *os.File, hasHeader bool, sep string, skipLa
 
 		// Force dirty pages to disk. CommitTransaction may not be implemented
 		// yet if this is called in lab 1 or 2.
-		bp.FlushAllPages()
+		bp.CommitTransaction(tid)
 
 	}
 	return nil
@@ -214,7 +214,7 @@ func (f *HeapFile) insertTuple(t *Tuple, tid TransactionID) error {
 
 	for ; pageNo < f.numPages; pageNo++ {
 		//fmt.Println(pageNo)
-		page, err := f.bufPool.GetPage(f, pageNo, tid, 0)
+		page, err := f.bufPool.GetPage(f, pageNo, tid, 1)
 		//fmt.Println("test1")
 
 		if err != nil {
@@ -259,8 +259,17 @@ func (f *HeapFile) insertTuple(t *Tuple, tid TransactionID) error {
 	//fmt.Println("test7")
 	f.numPages++
 
-	//fmt.Println("CLEAR HF")
-	return f.flushPage(newPage)
+	nPage, err := newHeapPage(&t.Desc, pageNo, f)
+	nPage.insertTuple(t)
+	nPage.setDirty(tid, true)
+
+	if err != nil {
+		return err
+	}
+
+	f.bufPool.insertpage(f, tid, pageNo, nPage)
+
+	return nil
 
 }
 
@@ -279,7 +288,7 @@ func (f *HeapFile) deleteTuple(t *Tuple, tid TransactionID) error {
 		return errors.New("invalid RID type")
 	}
 
-	page, err := f.bufPool.GetPage(f, rid.PageID, tid, 0)
+	page, err := f.bufPool.GetPage(f, rid.PageID, tid, 1)
 	if err != nil {
 		return err
 	}

@@ -136,6 +136,10 @@ func (h *heapPage) isDirty() bool {
 	return h.is_dirty
 }
 
+func (h *heapPage) getTID() TransactionID {
+	return (h.tid)
+}
+
 // Page method - mark the page as dirty
 func (h *heapPage) setDirty(tid TransactionID, dirty bool) {
 	h.is_dirty = dirty // Mark the page as dirty or clean

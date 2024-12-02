@@ -150,6 +150,7 @@ func TestTransactions(t *testing.T) {
 
 func transactionTestSetUpVarLen(t *testing.T, tupCnt int, pgCnt int) (*BufferPool, *HeapFile, TransactionID, TransactionID, Tuple, Tuple) {
 	_, t1, t2, hf, bp, _ := makeTestVars(t)
+	fmt.Println("gg")
 
 	csvFile, err := os.Open(fmt.Sprintf("txn_test_%d_%d.csv", tupCnt, pgCnt))
 	if err != nil {
@@ -157,13 +158,19 @@ func transactionTestSetUpVarLen(t *testing.T, tupCnt int, pgCnt int) (*BufferPoo
 	}
 	hf.LoadFromCSV(csvFile, false, ",", false)
 	if hf.NumPages() != pgCnt {
+		fmt.Println(hf.NumPages())
+		fmt.Println(pgCnt)
 		t.Fatalf("error making test vars; unexpected number of pages")
 	}
-
+	fmt.Println("gg")
 	tid1 := NewTID()
+	fmt.Println("gg")
 	bp.BeginTransaction(tid1)
+	fmt.Println("gg")
 	tid2 := NewTID()
+	fmt.Println("gg")
 	bp.BeginTransaction(tid2)
+	fmt.Println("gg")
 	return bp, hf, tid1, tid2, t1, t2
 }
 
@@ -174,8 +181,13 @@ func transactionTestSetUp(t *testing.T) (*BufferPool, *HeapFile, TransactionID, 
 
 func TestTransactionTwice(t *testing.T) {
 	bp, hf, tid1, tid2, _ := transactionTestSetUp(t)
+	fmt.Println(tid1)
+	fmt.Println(tid2)
+	// fmt.Println("out")
 	bp.GetPage(hf, 0, tid1, ReadPerm)
+	fmt.Println("out")
 	bp.GetPage(hf, 1, tid1, WritePerm)
+	fmt.Println("out")
 	bp.CommitTransaction(tid1)
 
 	bp.GetPage(hf, 0, tid2, WritePerm)
