@@ -68,6 +68,7 @@ func TestDeadlockReadWrite(t *testing.T) {
  * attempts p0.write.
  */
 func TestDeadlockWriteWrite(t *testing.T) {
+
 	bp, hf, tid1, tid2 := lockingTestSetUp(t)
 
 	lg1WriteA := startGrabber(bp, tid1, hf, 0, WritePerm)

@@ -132,8 +132,24 @@ func (bp *BufferPool) insertpage(file DBFile, tid TransactionID, pageNo int, pag
 	for {
 		bp.bufferMutex.Lock()
 
+		fmt.Println("Wait-For Graph:")
+		for tID, dependencies := range bp.waitFor {
+			fmt.Printf("Transaction %d waits for: ", tID)
+			if len(dependencies) == 0 {
+				fmt.Println("None")
+			} else {
+				for dep, isWaiting := range dependencies {
+					if isWaiting {
+						fmt.Printf("%d ", dep)
+					}
+				}
+				fmt.Println()
+			}
+		}
+
 		// Check for deadlock
 		if bp.detectDeadlock(tid) {
+
 			bp.bufferMutex.Unlock()
 			return fmt.Errorf("deadlock detected for transaction %v", tid)
 		}
@@ -194,12 +210,6 @@ func (bp *BufferPool) GetPage(file DBFile, pageNo int, tid TransactionID, perm R
 	for {
 		bp.bufferMutex.Lock()
 
-		// Check for deadlock
-		if bp.detectDeadlock(tid) {
-			bp.bufferMutex.Unlock()
-			return nil, fmt.Errorf("deadlock detected for transaction %v", tid)
-		}
-
 		// Check if page is already in buffer pool
 		page, pageExists := bp.pages[pageKey]
 
@@ -252,6 +262,32 @@ func (bp *BufferPool) GetPage(file DBFile, pageNo int, tid TransactionID, perm R
 			if blockerTid != 0 {
 				bp.addWaitFor(blockerTid, tid)
 			}
+			for readLock := range pageLock.sharedLocks {
+				if tid != readLock {
+					bp.addWaitFor(readLock, tid)
+				}
+			}
+
+			fmt.Println("Wait-For Graph:")
+			for tID, dependencies := range bp.waitFor {
+				fmt.Printf("Transaction %d waits for: ", tID)
+				if len(dependencies) == 0 {
+					fmt.Println("None")
+				} else {
+					for dep, isWaiting := range dependencies {
+						if isWaiting {
+							fmt.Printf("%d ", dep)
+						}
+					}
+					fmt.Println()
+				}
+			}
+
+			// Check for deadlock
+			if bp.detectDeadlock(tid) {
+				bp.bufferMutex.Unlock()
+				return nil, fmt.Errorf("deadlock detected for transaction %v", tid)
+			}
 		}
 
 		bp.bufferMutex.Unlock()
@@ -286,8 +322,8 @@ func (bp *BufferPool) detectDeadlock(tid TransactionID) bool {
 }
 
 func (bp *BufferPool) addWaitFor(blocker, waiter TransactionID) {
-	bp.bufferMutex.Lock()
-	defer bp.bufferMutex.Unlock()
+	// bp.bufferMutex.Lock()
+	// defer bp.bufferMutex.Unlock()
 
 	if bp.waitFor == nil {
 		bp.waitFor = make(map[TransactionID]map[TransactionID]bool)
@@ -351,6 +387,7 @@ func (bp *BufferPool) CommitTransaction(tid TransactionID) error {
 			if err != nil {
 				return err
 			}
+
 			page.setDirty(0, false)
 		}
 	}
@@ -379,8 +416,8 @@ func (bp *BufferPool) FlushAllPages() error {
 }
 
 func (bp *BufferPool) AbortTransaction(tid TransactionID) {
-	bp.bufferMutex.Lock()
-	defer bp.bufferMutex.Unlock()
+	// bp.bufferMutex.Lock()
+	// defer bp.bufferMutex.Unlock()
 
 	// Remove all wait-for entries for this transaction
 	for blocker, waiters := range bp.waitFor {
