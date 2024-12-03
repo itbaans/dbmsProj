@@ -66,39 +66,44 @@ func (bp *BufferPool) getOrCreatePageLock(pageKey interface{}) *PageLock {
 }
 
 // Attempt to acquire a lock for a page
-func (pl *PageLock) acquireLock(tid TransactionID, perm RWPerm) bool {
+func (pl *PageLock) acquireLock(tid TransactionID, perm RWPerm) (chan struct{}, bool) {
 	pl.mutex.Lock()
 	defer pl.mutex.Unlock()
+
+	// Create a wait channel
+	waitChan := make(chan struct{})
 
 	// Check for read (shared) lock
 	if perm == ReadPerm {
 		// Can acquire read lock if no exclusive lock or if exclusive lock is held by same transaction
 		if pl.exclusiveLock == 0 || pl.exclusiveLock == tid {
 			pl.sharedLocks[tid] = true
-			return true
+			return nil, true
 		}
-		return false
+		// Cannot acquire lock, add to waiting readers
+		pl.waitingReaders = append(pl.waitingReaders, waitChan)
+		return waitChan, false
 	}
 
 	// Check for write (exclusive) lock
 	if perm == WritePerm {
-		fmt.Println(len(pl.sharedLocks))
-		fmt.Println(pl.exclusiveLock)
 		// Can acquire write lock only if no other locks exist
 		if len(pl.sharedLocks) == 0 && pl.exclusiveLock == 0 {
 			pl.exclusiveLock = tid
-			return true
+			return nil, true
 		}
 		// Can upgrade to exclusive if current transaction already has a shared lock
 		if len(pl.sharedLocks) == 1 && pl.sharedLocks[tid] && pl.exclusiveLock == 0 {
 			delete(pl.sharedLocks, tid)
 			pl.exclusiveLock = tid
-			return true
+			return nil, true
 		}
-		return false
+		// Cannot acquire lock, add to waiting writers
+		pl.waitingWriters = append(pl.waitingWriters, waitChan)
+		return waitChan, false
 	}
 
-	return false
+	return nil, false
 }
 
 func (bp *BufferPool) BeginTransaction(tid TransactionID) error {
@@ -121,103 +126,138 @@ func (bp *BufferPool) BeginTransaction(tid TransactionID) error {
 }
 
 func (bp *BufferPool) insertpage(file DBFile, tid TransactionID, pageNo int, page Page) error {
-
 	pageKey := file.pageKey(pageNo) // Unique key for the page
 	pageLock := bp.getOrCreatePageLock(pageKey)
 
-	// Create a channel to block if lock cannot be acquired
-	lockChan := make(chan struct{})
-
-	for {
-		bp.bufferMutex.Lock()
-		if _, exists := bp.pages[pageKey]; exists {
-			fmt.Println("page already exists")
-			return nil
-		}
-
-		if pageLock.acquireLock(tid, 1) {
-			bp.pages[pageKey] = page
-			bp.bufferMutex.Unlock()
-			fmt.Println("inserted page")
-			return nil
-		}
-		fmt.Println("fail to aqr")
-		bp.bufferMutex.Unlock()
-
-		<-lockChan
-	}
-}
-
-// GetPage with page-level locking
-func (bp *BufferPool) GetPage(file DBFile, pageNo int, tid TransactionID, perm RWPerm) (Page, error) {
-	pageKey := file.pageKey(pageNo) // Unique key for the page
-	pageLock := bp.getOrCreatePageLock(pageKey)
-
-	// Create a channel to block if lock cannot be acquired
-	lockChan := make(chan struct{})
-
-	// Repeatedly attempt to acquire lock
 	for {
 		bp.bufferMutex.Lock()
 
 		// Check for deadlock
 		if bp.detectDeadlock(tid) {
-			//bp.AbortTransaction(tid)
 			bp.bufferMutex.Unlock()
-			return nil, fmt.Errorf("deadlock detected for transaction %v", tid)
+			return fmt.Errorf("deadlock detected for transaction %v", tid)
 		}
 
-		// Check if page is already in buffer pool
-		if page, exists := bp.pages[pageKey]; exists {
-			// Attempt to acquire lock
-			if pageLock.acquireLock(tid, perm) {
-				bp.bufferMutex.Unlock()
-				fmt.Println("got the page")
-				return page, nil
-			}
-			// Failed to acquire lock, release buffer mutex and wait
-			fmt.Println("fail to aqr")
+		// Check if page already exists
+		if _, exists := bp.pages[pageKey]; exists {
 			bp.bufferMutex.Unlock()
-		} else {
-			// Page not in buffer pool, check if we have space to add it
+			return fmt.Errorf("page already exists")
+		}
+
+		// Attempt to acquire lock
+		waitChan, lockAcquired := pageLock.acquireLock(tid, WritePerm)
+
+		if lockAcquired {
+			// Check buffer pool capacity before inserting
 			if len(bp.pages) >= bp.numPages {
-				// Handle eviction if buffer pool is full
+				// Implement eviction logic
 				evicted := false
-				for key, page := range bp.pages {
-					if !page.isDirty() {
-						delete(bp.pages, key) // Remove a clean page
+				for key, existingPage := range bp.pages {
+					if !existingPage.isDirty() {
+						delete(bp.pages, key)
 						delete(bp.pageLocks, key)
 						evicted = true
 						break
 					}
 				}
+
 				if !evicted {
 					bp.bufferMutex.Unlock()
-					return nil, fmt.Errorf("all pages are dirty, cannot evict any page")
+					return fmt.Errorf("buffer pool full, cannot insert page")
 				}
 			}
 
-			// Load the page from disk
-			newPage, err := file.readPage(pageNo)
-			if err != nil {
-				bp.bufferMutex.Unlock()
-				return nil, err
-			}
-
-			// Add the new page to the buffer pool and attempt to acquire lock
-			if pageLock.acquireLock(tid, perm) {
-				// Lock acquired, now add the page to the buffer pool
-				bp.pages[pageKey] = newPage
-				bp.bufferMutex.Unlock()
-				return newPage, nil
-			}
-			// Failed to acquire lock, release buffer mutex and wait
+			// Insert the page
+			bp.pages[pageKey] = page
 			bp.bufferMutex.Unlock()
-
+			return nil
 		}
 
-		// Wait for lock to be potentially available
-		<-lockChan
+		// Track wait-for relationship if lock couldn't be acquired
+		blockerTid := pageLock.exclusiveLock
+		if blockerTid != 0 {
+			bp.addWaitFor(blockerTid, tid)
+		}
+
+		bp.bufferMutex.Unlock()
+
+		// Wait on the channel
+		<-waitChan
+	}
+}
+
+// GetPage with page-level locking
+func (bp *BufferPool) GetPage(file DBFile, pageNo int, tid TransactionID, perm RWPerm) (Page, error) {
+	pageKey := file.pageKey(pageNo)
+	pageLock := bp.getOrCreatePageLock(pageKey)
+
+	for {
+		bp.bufferMutex.Lock()
+
+		// Check for deadlock
+		if bp.detectDeadlock(tid) {
+			bp.bufferMutex.Unlock()
+			return nil, fmt.Errorf("deadlock detected for transaction %v", tid)
+		}
+
+		// Check if page is already in buffer pool
+		page, pageExists := bp.pages[pageKey]
+
+		// Attempt to acquire lock
+		waitChan, lockAcquired := pageLock.acquireLock(tid, perm)
+		var blockerTid TransactionID
+
+		if lockAcquired {
+			// If page doesn't exist, load from disk
+			if !pageExists {
+				// Page not in buffer pool, check if we have space to add it
+				if len(bp.pages) >= bp.numPages {
+					// Handle eviction if buffer pool is full
+					evicted := false
+					for key, page := range bp.pages {
+						if !page.isDirty() {
+							delete(bp.pages, key) // Remove a clean page
+							delete(bp.pageLocks, key)
+							evicted = true
+							break
+						}
+					}
+					if !evicted {
+						bp.bufferMutex.Unlock()
+						return nil, fmt.Errorf("all pages are dirty, cannot evict any page")
+					}
+				}
+
+				// Load the page from disk
+				var err error
+				page, err = file.readPage(pageNo)
+				if err != nil {
+					bp.bufferMutex.Unlock()
+					return nil, err
+				}
+				bp.pages[pageKey] = page
+			}
+
+			if blockerTid != 0 {
+				bp.removeWaitFor(blockerTid, tid)
+			}
+
+			bp.bufferMutex.Unlock()
+			return page, nil
+		}
+
+		// Track wait-for relationship if lock couldn't be acquired
+		if pageExists {
+			blockerTid = pageLock.exclusiveLock
+			if blockerTid != 0 {
+				bp.addWaitFor(blockerTid, tid)
+			}
+		}
+
+		bp.bufferMutex.Unlock()
+
+		// Wait on the channel
+		<-waitChan
 	}
 }
 
@@ -261,8 +301,9 @@ func (bp *BufferPool) addWaitFor(blocker, waiter TransactionID) {
 }
 
 func (bp *BufferPool) removeWaitFor(blocker, waiter TransactionID) {
-	bp.bufferMutex.Lock()
-	defer bp.bufferMutex.Unlock()
+
+	// bp.bufferMutex.Lock()
+	// defer bp.bufferMutex.Unlock()
 
 	if waiters, exists := bp.waitFor[blocker]; exists {
 		delete(waiters, waiter)
@@ -282,9 +323,22 @@ func (pl *PageLock) releaseLock(tid TransactionID) {
 	// Clear exclusive lock if held by this transaction
 	if pl.exclusiveLock == tid {
 		pl.exclusiveLock = 0
+
+		// Attempt to unblock waiting writers first
+		if len(pl.waitingWriters) > 0 {
+			// Signal the first waiting writer
+			close(pl.waitingWriters[0])
+			pl.waitingWriters = pl.waitingWriters[1:]
+			return
+		}
+
+		// If no writers, try to unblock waiting readers
+		for _, readerChan := range pl.waitingReaders {
+			close(readerChan)
+		}
+		pl.waitingReaders = nil
 	}
 }
-
 func (bp *BufferPool) CommitTransaction(tid TransactionID) error {
 	// bp.bufferMutex.Lock()
 	// defer bp.bufferMutex.Unlock()
@@ -328,18 +382,26 @@ func (bp *BufferPool) AbortTransaction(tid TransactionID) {
 	bp.bufferMutex.Lock()
 	defer bp.bufferMutex.Unlock()
 
+	// Remove all wait-for entries for this transaction
+	for blocker, waiters := range bp.waitFor {
+		if _, exists := waiters[tid]; exists {
+			bp.removeWaitFor(blocker, tid)
+		}
+	}
+
 	// Revert changes by removing dirty pages associated with this transaction
 	for pageKey, page := range bp.pages {
 		if page.(*heapPage).tid == tid {
 			// Remove the page from the buffer pool
 			delete(bp.pages, pageKey)
-			delete(bp.pageLocks, pageKey)
+			//delete(bp.pageLocks, pageKey)
 		}
 	}
 
 	// Release locks for this transaction
-	for _, pageLock := range bp.pageLocks {
+	for key, pageLock := range bp.pageLocks {
 		pageLock.releaseLock(tid)
+		delete(bp.pageLocks, key)
 	}
 
 	// Remove transaction from active transactions
